@@ -17,24 +17,45 @@ LOCAL_DOCS_DIR = './artifacts'
 STYLE_FILE = 'corporate_style.css'
 DRIVE_FOLDER_NAME = 'ISMS_v1_Staging'
 
-# REPLACE THIS with a direct link to your logo image (Must be public or accessible by the API)
-LOGO_URL = 'https://upload.wikimedia.org/wikipedia/commons/b/b1/ComAp_master_logo.png' 
+# Logo: ComAp Master Logo (PNG)
+LOGO_URL = 'https://upload.wikimedia.org/wikipedia/commons/b/b1/ComAp_master_logo.png'
 
 def authenticate():
-    """Handles OAuth 2.0 Authentication."""
+    """
+    Handles OAuth 2.0 Authentication.
+    Uses 'run_console' (Manual Copy/Paste) method for WSL/Docker compatibility.
+    """
     creds = None
     if os.path.exists('token.pickle'):
         with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
+            
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
                 'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
+            
+            # --- WSL/DOCKER FIX START ---
+            # Instead of run_local_server(), we manually handle the URL
+            # to avoid 'could not locate runnable browser' errors.
+            auth_url, _ = flow.authorization_url(prompt='consent')
+            
+            print("\n--- GOOGLE AUTHENTICATION REQUIRED ---")
+            print("1. Copy this URL into your browser:")
+            print(f"\n{auth_url}\n")
+            print("2. Log in and authorize the app.")
+            print("3. Copy the code provided by Google.")
+            code = input("4. Paste the code here: ").strip()
+            
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+            # --- WSL/DOCKER FIX END ---
+
         with open('token.pickle', 'wb') as token:
             pickle.dump(creds, token)
+            
     return creds
 
 def get_drive_service(creds):
@@ -83,46 +104,33 @@ def insert_toc(docs_service, doc_id):
 
 def enable_table_header_repeat(docs_service, doc_id):
     """
-    Scans document for Tables and sets the 'tableHeader' property on the first row 
-    of every table to True. This ensures the red header repeats across pages.
+    Sets 'tableHeader' property on the first row of every table.
     """
     try:
         doc = docs_service.documents().get(documentId=doc_id).execute()
         body_content = doc.get('body', {}).get('content', [])
-        
         requests = []
-        
         for element in body_content:
             if 'table' in element:
-                # Found a table. Get its start index.
                 table = element['table']
                 start_index = element['startIndex']
-                
-                # Request to update the first row (index 0) of this table
                 requests.append({
                     'updateTableRowStyle': {
-                        'tableStartLocation': {
-                            'index': start_index
-                        },
-                        'rowIndices': [0], # Target first row
-                        'tableRowStyle': {
-                            'tableHeader': True
-                        },
+                        'tableStartLocation': {'index': start_index},
+                        'rowIndices': [0],
+                        'tableRowStyle': {'tableHeader': True},
                         'fields': 'tableHeader'
                     }
                 })
-        
         if requests:
             docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
             print(f"  [+] Formatting: 'Repeat Header Row' enabled for {len(requests)} tables.")
-        
     except Exception as e:
         print(f"  [!] Table Header Error: {str(e)}")
 
 def add_corporate_header_footer(docs_service, doc_id, doc_title):
     """
     Applies Corporate Header (Logo + Doc ID) and Footer (Version/Date + Page #).
-    Uses 1x2 Tables for layout.
     """
     # 1. Create Header/Footer containers
     init_requests = [
@@ -133,10 +141,8 @@ def add_corporate_header_footer(docs_service, doc_id, doc_title):
     try:
         docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': init_requests}).execute()
 
-        # 2. Get IDs for the new Header/Footer
+        # 2. Get IDs
         doc = docs_service.documents().get(documentId=doc_id).execute()
-        
-        # Guard clause in case headers weren't created
         if 'headers' not in doc or 'footers' not in doc:
              print("  [!] Error: Headers/Footers could not be initialized.")
              return
@@ -144,35 +150,33 @@ def add_corporate_header_footer(docs_service, doc_id, doc_title):
         header_id = list(doc.get('headers', {}).keys())[0]
         footer_id = list(doc.get('footers', {}).keys())[0]
 
-        # 3. Insert Layout Tables (1 Row, 2 Columns) into Header and Footer
+        # 3. Insert Layout Tables
         table_requests = [
             {'insertTable': {'segmentId': header_id, 'location': {'index': 0}, 'columns': 2, 'rows': 1}},
             {'insertTable': {'segmentId': footer_id, 'location': {'index': 0}, 'columns': 2, 'rows': 1}}
         ]
         docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': table_requests}).execute()
 
-        # 4. Get Table Cell Locations (Requires re-fetching doc to get structure)
+        # 4. Get Table Cell Locations
         doc = docs_service.documents().get(documentId=doc_id).execute()
         
-        # Extract Header Table Cells
         header_content = doc['headers'][header_id]['content']
         h_table = header_content[0]['table']
         h_cell_left_idx = h_table['tableRows'][0]['tableCells'][0]['startIndex']
         h_cell_right_idx = h_table['tableRows'][0]['tableCells'][1]['startIndex']
 
-        # Extract Footer Table Cells
         footer_content = doc['footers'][footer_id]['content']
         f_table = footer_content[0]['table']
         f_cell_left_idx = f_table['tableRows'][0]['tableCells'][0]['startIndex']
         f_cell_right_idx = f_table['tableRows'][0]['tableCells'][1]['startIndex']
 
-        # 5. Insert Content & Styling
+        # 5. Insert Content
         logo_w_pt = 110.55
         logo_h_pt = 34.02
         today_str = datetime.date.today().strftime("%d-%b-%Y")
         
         content_requests = [
-            # --- HEADER ---
+            # HEADER
             {
                 'insertInlineImage': {
                     'segmentId': header_id,
@@ -196,8 +200,7 @@ def add_corporate_header_footer(docs_service, doc_id, doc_title):
                     'fields': 'alignment'
                 }
             },
-
-            # --- FOOTER ---
+            # FOOTER
             {
                 'insertText': {
                     'segmentId': footer_id,
@@ -226,8 +229,7 @@ def add_corporate_header_footer(docs_service, doc_id, doc_title):
                     'fields': 'alignment'
                 }
             },
-
-            # --- CLEANUP (Remove Borders) ---
+            # BORDER REMOVAL
             {
                 'updateTableCellStyle': {
                     'tableStartLocation': {'segmentId': header_id, 'index': 0},
@@ -264,11 +266,6 @@ def process_file(drive_service, docs_service, filename, local_path, folder_id, c
         md_content = f.read()
     
     html_body = markdown2.markdown(md_content, extras=["tables", "fenced-code-blocks"])
-    
-    # --- SPECIFIC TABLE STYLING INJECTION ---
-    # Header: BG #F00000 (RGB 240,0,0), Text White, Bold.
-    # Data: Text Black, BG Transparent.
-    # Alignment: Left, Middle.
     
     table_css = """
     table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
@@ -322,7 +319,7 @@ def process_file(drive_service, docs_service, filename, local_path, folder_id, c
     print(f"Deployed: {doc_title} (ID: {doc_id})")
     
     insert_toc(docs_service, doc_id)
-    enable_table_header_repeat(docs_service, doc_id) # Apply repeat header logic
+    enable_table_header_repeat(docs_service, doc_id)
     add_corporate_header_footer(docs_service, doc_id, doc_title)
 
 def main():
