@@ -25,7 +25,7 @@ LOGO_URL = 'https://upload.wikimedia.org/wikipedia/commons/b/b1/ComAp_master_log
 def authenticate():
     """
     Handles OAuth 2.0 Authentication.
-    Uses 'run_local_server' with open_browser=False for WSL compatibility.
+    Uses 'run_local_server' with explicit IPv4 binding for WSL compatibility.
     """
     creds = None
     if os.path.exists('token.pickle'):
@@ -42,10 +42,15 @@ def authenticate():
             print("\n--- GOOGLE AUTHENTICATION REQUIRED ---")
             print("1. A URL will appear below.")
             print("2. Paste it into your browser.")
-            print("3. Login. The page will eventually say 'The authentication flow has completed'.")
-            print("4. Close the browser tab and return here.\n")
+            print("3. Login via Google.")
+            print("4. IMPORTANT: If the browser shows 'Site can't be reached' after login:")
+            print("   Copy the entire URL from the browser address bar (http://localhost:8080/...)")
+            print("   Open a NEW terminal tab in WSL and run: curl \"<PASTED_URL>\"")
+            print("   This will complete the handshake manually.\n")
             
+            # FORCE IPv4 (127.0.0.1) instead of localhost (which might be IPv6)
             creds = flow.run_local_server(
+                host='127.0.0.1',
                 port=8080, 
                 open_browser=False,
                 authorization_prompt_message='Visit this URL to authorize this application: {url}'
