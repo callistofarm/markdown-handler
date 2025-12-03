@@ -1,0 +1,24 @@
+services:
+  isms-deployer:
+    build: .
+    image: isms-docs-deployer:latest
+    container_name: isms_deployer_v1
+    volumes:
+      # Mount Code & Logic
+      - ./docs_deployer.py:/app/docs_deployer.py
+      - ./corporate_style.css:/app/corporate_style.css
+      
+      # Mount Data Source
+      - ./artifacts:/app/artifacts
+      
+      # Mount Credentials (CRITICAL for Auth)
+      - ./credentials.json:/app/credentials.json
+      - ./token.pickle:/app/token.pickle
+    
+    # Ensure stdout is flushed immediately for logging visibility
+    environment:
+      - PYTHONUNBUFFERED=1
+    
+    # Remove container after run to keep environment clean
+    # Remove this line if you want to inspect logs after exit
+    # command: python docs_deployer.py

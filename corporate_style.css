@@ -1,0 +1,79 @@
+/* CORPORATE STYLE REPORT MAPPING */
+
+/* Style Name: Normal */
+body {
+    font-family: 'Arial', sans-serif; /* [source: 3] */
+    font-size: 11pt;                  /* [source: 4] */
+    color: rgb(0, 0, 0);              /* [source: 5] */
+    line-height: 1.5;
+}
+
+/* Style Name: Heading 1 */
+h1 {
+    font-family: 'Arial', sans-serif; /* [source: 10] */
+    font-size: 30pt;                  /* [source: 11] */
+    color: rgb(135, 135, 135);        /* [source: 12] */
+    font-weight: bold;                /* [source: 13] */
+    padding-bottom: 6px;
+    border-bottom: 2px solid rgb(135, 135, 135);
+    margin-top: 24px;
+}
+
+/* Style Name: Heading 2 */
+h2 {
+    font-family: 'Arial', sans-serif; /* [source: 17] */
+    font-size: 20pt;                  /* [source: 18] */
+    color: rgb(60, 60, 60);           /* Mapped for contrast against H1 */
+    font-weight: bold;                /* [source: 20] */
+    margin-top: 18px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #cccccc;
+}
+
+/* Style Name: Heading 3 */
+h3 {
+    font-family: 'Arial', sans-serif; /* [source: 24] */
+    font-size: 16pt;                  /* [source: 25] */
+    color: rgb(0, 0, 0);              /* Standard Black for H3 */
+    font-weight: bold;                /* [source: 27] */
+    margin-top: 14px;
+}
+
+/* STANDARD TABLES (Document Control & Data) */
+/* Revisions: Red Header, White Text, Left-Middle Align */
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 20px;
+    font-size: 10pt;
+    font-family: 'Arial', sans-serif;
+}
+
+th {
+    background-color: #F00000;    /* RGB 240,0,0 */
+    color: #FFFFFF;               /* RGB 255,255,255 */
+    font-weight: bold;
+    text-align: left;
+    vertical-align: middle;
+    padding: 8px;
+    border: 1px solid #999999;
+}
+
+td {
+    background-color: transparent; /* No BG */
+    color: #000000;               /* RGB 0,0,0 */
+    text-align: left;
+    vertical-align: middle;
+    padding: 8px;
+    border: 1px solid #999999;
+}
+
+/* CODE BLOCKS */
+pre, code {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 9pt;
+    background-color: #f4f4f4;
+    padding: 2px 4px;
+    border: 1px solid #ddd;
+}
