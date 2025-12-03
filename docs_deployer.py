@@ -38,8 +38,9 @@ def authenticate():
                 'credentials.json', SCOPES)
             
             # --- WSL/DOCKER FIX START ---
-            # Instead of run_local_server(), we manually handle the URL
-            # to avoid 'could not locate runnable browser' errors.
+            # Explicitly set the OOB redirect URI to fix "Missing required parameter" error
+            flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+            
             auth_url, _ = flow.authorization_url(prompt='consent')
             
             print("\n--- GOOGLE AUTHENTICATION REQUIRED ---")
