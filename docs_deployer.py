@@ -15,7 +15,9 @@ SCOPES = [
 ]
 LOCAL_DOCS_DIR = './artifacts'
 STYLE_FILE = 'corporate_style.css'
-DRIVE_FOLDER_NAME = 'ISMS_v1_Staging'
+
+# Updated to support nested paths
+DRIVE_FOLDER_NAME = 'CSCADA/docs_deployer_output'
 
 # Logo: ComAp Master Logo (PNG)
 LOGO_URL = 'https://upload.wikimedia.org/wikipedia/commons/b/b1/ComAp_master_logo.png'
@@ -23,7 +25,7 @@ LOGO_URL = 'https://upload.wikimedia.org/wikipedia/commons/b/b1/ComAp_master_log
 def authenticate():
     """
     Handles OAuth 2.0 Authentication.
-    Uses 'run_console' (Manual Copy/Paste) method for WSL/Docker compatibility.
+    Uses 'run_local_server' with open_browser=False for WSL compatibility.
     """
     creds = None
     if os.path.exists('token.pickle'):
@@ -37,22 +39,17 @@ def authenticate():
             flow = InstalledAppFlow.from_client_secrets_file(
                 'credentials.json', SCOPES)
             
-            # --- WSL/DOCKER FIX START ---
-            # Explicitly set the OOB redirect URI to fix "Missing required parameter" error
-            flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
-            
-            auth_url, _ = flow.authorization_url(prompt='consent')
-            
             print("\n--- GOOGLE AUTHENTICATION REQUIRED ---")
-            print("1. Copy this URL into your browser:")
-            print(f"\n{auth_url}\n")
-            print("2. Log in and authorize the app.")
-            print("3. Copy the code provided by Google.")
-            code = input("4. Paste the code here: ").strip()
+            print("1. A URL will appear below.")
+            print("2. Paste it into your browser.")
+            print("3. Login. The page will eventually say 'The authentication flow has completed'.")
+            print("4. Close the browser tab and return here.\n")
             
-            flow.fetch_token(code=code)
-            creds = flow.credentials
-            # --- WSL/DOCKER FIX END ---
+            creds = flow.run_local_server(
+                port=8080, 
+                open_browser=False,
+                authorization_prompt_message='Visit this URL to authorize this application: {url}'
+            )
 
         with open('token.pickle', 'wb') as token:
             pickle.dump(creds, token)
@@ -65,23 +62,38 @@ def get_drive_service(creds):
 def get_docs_service(creds):
     return build('docs', 'v1', credentials=creds)
 
-def create_folder(service, folder_name):
-    """Creates or retrieves the target folder ID."""
-    file_metadata = {
-        'name': folder_name,
-        'mimeType': 'application/vnd.google-apps.folder'
-    }
-    results = service.files().list(
-        q=f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false",
-        spaces='drive').execute()
-    items = results.get('files', [])
+def get_or_create_drive_path(service, folder_path):
+    """
+    Resolves a '/' separated path string (e.g. 'Parent/Child') into a specific Folder ID.
+    Traverses the hierarchy, creating missing directories as needed.
+    """
+    parts = folder_path.strip('/').split('/')
+    parent_id = 'root'
     
-    if not items:
-        folder = service.files().create(body=file_metadata, fields='id').execute()
-        print(f"Directory Created: {folder_name}")
-        return folder.get('id')
-    else:
-        return items[0]['id']
+    print(f"Resolving Drive Path: {folder_path}")
+    
+    for part in parts:
+        # Search for folder with this name inside the current parent_id
+        query = f"mimeType='application/vnd.google-apps.folder' and name='{part}' and '{parent_id}' in parents and trashed=false"
+        results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+        items = results.get('files', [])
+        
+        if not items:
+            # Folder doesn't exist, create it
+            file_metadata = {
+                'name': part,
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [parent_id]
+            }
+            folder = service.files().create(body=file_metadata, fields='id').execute()
+            parent_id = folder.get('id')
+            print(f"  [+] Created Directory: {part} (ID: {parent_id})")
+        else:
+            # Folder exists, traverse into it
+            parent_id = items[0]['id']
+            print(f"  [.] Found Directory: {part} (ID: {parent_id})")
+            
+    return parent_id
 
 def load_style():
     if os.path.exists(STYLE_FILE):
@@ -328,7 +340,8 @@ def main():
     drive_service = get_drive_service(creds)
     docs_service = get_docs_service(creds)
     
-    folder_id = create_folder(drive_service, DRIVE_FOLDER_NAME)
+    # Updated to use the new path resolver
+    folder_id = get_or_create_drive_path(drive_service, DRIVE_FOLDER_NAME)
     css_style = load_style()
     
     print("--- Starting ISMS Deployment ---")
