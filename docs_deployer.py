@@ -1,13 +1,13 @@
 import os
-import pickle
 import markdown2
 import io
 import datetime
 import time 
 import struct
+import json
+import base64
 from urllib.request import Request, urlopen
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request as GoogleRequest
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from googleapiclient.errors import HttpError
@@ -21,7 +21,7 @@ SCOPES = [
 LOCAL_DOCS_DIR = './artifacts'
 STYLE_FILE = 'corporate_style.css'
 
-# PASTE YOUR EXISTING CSCADA FOLDER ID HERE
+# The ID of the Shared Folder you gave the Service Account access to
 ROOT_FOLDER_ID = '1pn4twkjjG_VlJOpAvrcdvE4C2PISyR3e' 
 
 OUTPUT_FOLDER_NAME = 'docs_deployer_output'
@@ -31,29 +31,36 @@ LOGO_URL = 'https://github.com/callistofarm/markdown-handler/blob/main/logo.png'
 TARGET_HEIGHT_PT = 37.5 
 
 def authenticate():
+    """
+    Authenticates using a Service Account Key.
+    Supports both Local File (service_account.json) and Env Var (GitHub Secrets).
+    """
     creds = None
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(GoogleRequest())
+    env_secret = os.environ.get('GOOGLE_CREDENTIALS_B64')
+    local_file = 'service_account.json'
+
+    try:
+        if env_secret:
+            print("  [i] Auth: Reading credentials from Environment Variable...")
+            key_dict = json.loads(base64.b64decode(env_secret))
+            creds = service_account.Credentials.from_service_account_info(key_dict, scopes=SCOPES)
+        
+        elif os.path.exists(local_file):
+            print("  [i] Auth: Reading credentials from local JSON file...")
+            creds = service_account.Credentials.from_service_account_file(local_file, scopes=SCOPES)
+        
         else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            print("\n--- GOOGLE AUTHENTICATION REQUIRED ---")
-            print("1. Copy the URL below.")
-            print("2. Paste it into your Windows Browser.")
-            print("3. Login and click 'Allow'.")
-            print("4. IMPORTANT: If the browser site fails to load (localhost refused):")
-            print("   Copy the URL from the browser address bar (http://localhost:8080/?code=...)")
-            print("   Open a new WSL terminal tab and run: curl \"<PASTED_URL>\"")
-            
-            # FIXED: Changed 0.0.0.0 back to localhost to satisfy Google's allowlist
-            creds = flow.run_local_server(host='localhost', port=8080, open_browser=False)
-            
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
-    return creds
+            raise FileNotFoundError(
+                "CRITICAL: No Service Account credentials found.\n"
+                "1. Place 'service_account.json' locally, OR\n"
+                "2. Set 'GOOGLE_CREDENTIALS_B64' env var with the Base64 encoded JSON."
+            )
+        
+        return creds
+
+    except Exception as e:
+        print(f"  [!] Auth Failed: {e}")
+        raise e
 
 def get_services(creds):
     return build('drive', 'v3', credentials=creds), build('docs', 'v1', credentials=creds)
@@ -94,15 +101,23 @@ def execute_with_retry(request_object, retries=8, delay=5, strict=True):
     return None
 
 def get_or_create_output_folder(service, root_id, folder_name):
+    # Service Accounts have their own 'root'. We MUST target the shared folder ID.
     target_parent = root_id if root_id else 'root'
+    
     print(f"Resolving Output Folder '{folder_name}' inside Parent ID: {target_parent}")
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{target_parent}' in parents and trashed=false"
     results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     items = results.get('files', [])
+    
     if not items:
         metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [target_parent]}
-        folder = service.files().create(body=metadata, fields='id').execute()
-        return folder.get('id')
+        try:
+            folder = service.files().create(body=metadata, fields='id').execute()
+            return folder.get('id')
+        except HttpError as e:
+            if e.resp.status == 404:
+                raise Exception(f"Folder ID '{target_parent}' not found. Did you share it with the Service Account email?")
+            raise e
     else:
         print(f"  [.] Found Existing Output Folder: {folder_name}")
         return items[0]['id']
@@ -167,7 +182,7 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
             {'updateParagraphStyle': {'range': {'segmentId': header_id, 'startIndex': h_R, 'endIndex': h_R + 1}, 'paragraphStyle': {'alignment': 'END'}, 'fields': 'alignment'}},
             {'updateParagraphStyle': {'range': {'segmentId': footer_id, 'startIndex': f_R, 'endIndex': f_R + 1}, 'paragraphStyle': {'alignment': 'END'}, 'fields': 'alignment'}},
             
-            # Borders (Corrected API Syntax)
+            # Borders
             {'updateTableCellStyle': {
                 'tableStartLocation': {'segmentId': header_id, 'index': 0}, 
                 'fields': 'borderTop,borderBottom,borderLeft,borderRight', 
@@ -224,7 +239,7 @@ def main():
     ratio = get_png_ratio(final_logo_url)
     logo_width_pt = TARGET_HEIGHT_PT * ratio
     
-    print("--- Starting ISMS Deployment ---")
+    print("--- Starting ISMS Deployment (Service Account) ---")
     for filename in os.listdir(LOCAL_DOCS_DIR):
         if filename.endswith(".md"):
             print(f"\nProcessing: {filename}")
