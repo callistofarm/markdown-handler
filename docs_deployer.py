@@ -61,20 +61,21 @@ def get_png_ratio(url):
     except:
         return 2.0
 
-def execute_with_retry(request_object, retries=3, delay=2, strict=True):
+def execute_with_retry(request_object, retries=8, delay=5, strict=True):
     """
-    strict=True: Raises exception if all retries fail (Critical steps)
-    strict=False: Returns None if all retries fail (Optional steps like Logo)
+    High-Latency Retry Wrapper:
+    Retries: 8
+    Base Delay: 5s
+    Max Wait: ~5-6 minutes total coverage for heavy propagation lag.
     """
     for n in range(retries):
         try:
             return request_object.execute()
         except HttpError as e:
-            # 500s are retryable, 400s are usually logic errors (except for images)
             if e.resp.status >= 500:
                 print(f"    [~] API {e.resp.status}. Retrying in {delay}s... ({n+1}/{retries})")
                 time.sleep(delay)
-                delay *= 2 
+                delay = min(delay * 1.5, 60) # Cap delay at 60s
             else:
                 if strict: raise e
                 else: 
@@ -82,7 +83,7 @@ def execute_with_retry(request_object, retries=3, delay=2, strict=True):
                     return None
     
     if strict:
-        raise Exception("API Retry Limit Exceeded")
+        raise Exception("API Retry Limit Exceeded (Google backend is unresponsive)")
     else:
         print("    [!] Soft Fail: All retries failed for optional step.")
         return None
@@ -107,23 +108,21 @@ def load_style():
     return ""
 
 def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt, logo_url):
-    """
-    Broken down into Atomic Phases. If Phase 4 (Logo) fails, the doc remains valid.
-    """
     today_str = datetime.date.today().strftime("%d-%b-%Y")
 
     try:
         # --- PHASE 1: Structure (Headers/Footers) ---
+        # FIX: Removed explicit 'sectionBreakLocation' to allow API to default to the Body Section.
+        # This prevents "Index Out of Bounds" race conditions.
         print("    [1/4] Creating Headers & Footers...")
         reqs_p1 = [
-            {'createHeader': {'type': 'DEFAULT', 'sectionBreakLocation': {'index': 1}}},
-            {'createFooter': {'type': 'DEFAULT', 'sectionBreakLocation': {'index': 1}}}
+            {'createHeader': {'type': 'DEFAULT'}}, 
+            {'createFooter': {'type': 'DEFAULT'}}
         ]
         execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs_p1}))
         
         # --- PHASE 2: Tables & Layout ---
-        print("    [2/4] inserting Layout Tables...")
-        # Need IDs first
+        print("    [2/4] Inserting Layout Tables...")
         doc = execute_with_retry(docs_service.documents().get(documentId=doc_id))
         header_id = list(doc.get('headers', {}).keys())[0]
         footer_id = list(doc.get('footers', {}).keys())[0]
@@ -136,7 +135,6 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
 
         # --- PHASE 3: Text Content ---
         print("    [3/4] Inserting Corporate Text...")
-        # Re-fetch for indices
         doc = execute_with_retry(docs_service.documents().get(documentId=doc_id))
         h_table = doc['headers'][header_id]['content'][0]['table']
         h_cell_L = h_table['tableRows'][0]['tableCells'][0]['startIndex']
@@ -171,7 +169,6 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
                     'objectSize': {'height': {'magnitude': TARGET_HEIGHT_PT, 'unit': 'PT'}, 'width': {'magnitude': logo_width_pt, 'unit': 'PT'}}
                 }
             }]
-            # STRICT=FALSE -> This will return None on failure instead of crashing the script
             result = execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': logo_req}), strict=False)
             if result: logo_inserted = True
 
@@ -196,7 +193,7 @@ def main():
     ratio = get_png_ratio(final_logo_url)
     logo_width_pt = TARGET_HEIGHT_PT * ratio
     
-    print("--- Starting ISMS Deployment (Fault Tolerant Mode) ---")
+    print("--- Starting ISMS Deployment (High Stability Mode) ---")
     for filename in os.listdir(LOCAL_DOCS_DIR):
         if filename.endswith(".md"):
             print(f"\nProcessing: {filename}")
@@ -219,13 +216,14 @@ def main():
                     {'insertText': {'location': {'index': 1}, 'text': "Table of Contents\n"}},
                     {'updateParagraphStyle': {'range': {'startIndex': 1, 'endIndex': 15}, 'paragraphStyle': {'namedStyleType': 'HEADING_1'}, 'fields': 'namedStyleType'}}
                 ]
+                # High Latency Wait: Give the doc 10 full seconds to settle before first edit.
+                print("  [.] Waiting 10s for propagation...")
+                time.sleep(10)
                 execute_with_retry(docs.documents().batchUpdate(documentId=doc_id, body={'requests': toc_req}))
                 print("  [+] ToC Inserted")
 
-                # 3. Branding (The risky part)
+                # 3. Branding
                 apply_structure_and_branding(docs, doc_id, meta['name'], logo_width_pt, final_logo_url)
-                
-                time.sleep(1) # Breathe
                 
             except Exception as e:
                 print(f"  [!] FAILED to process {filename}: {e}")
