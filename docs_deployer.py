@@ -77,7 +77,7 @@ def execute_with_retry(request_object, retries=8, delay=5, strict=True):
                     return None
     
     if strict:
-        raise Exception("API Retry Limit Exceeded (Google backend is unresponsive)")
+        raise Exception("API Retry Limit Exceeded")
     else:
         print("    [!] Soft Fail: All retries failed for optional step.")
         return None
@@ -101,6 +101,30 @@ def load_style():
         with open(STYLE_FILE, 'r') as f: return f.read()
     return ""
 
+def wait_for_table_structure(docs_service, doc_id, header_id):
+    """
+    Active Verification: Polls the API until the Header actually contains a Table.
+    Prevents KeyError: 'table' race conditions.
+    """
+    print("    [...] Verifying Table Propagation...")
+    for i in range(10): # Try for 30 seconds (10 x 3s)
+        doc = execute_with_retry(docs_service.documents().get(documentId=doc_id))
+        
+        # Check Header
+        header_content = doc.get('headers', {}).get(header_id, {}).get('content', [])
+        has_table = False
+        for element in header_content:
+            if 'table' in element:
+                has_table = True
+                break
+        
+        if has_table:
+            return doc # Return the fresh, valid doc structure
+        
+        time.sleep(3) # Wait for propagation
+        
+    raise Exception("Timeout: Table structure failed to propagate to Read Replica.")
+
 def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt, logo_url):
     today_str = datetime.date.today().strftime("%d-%b-%Y")
 
@@ -119,16 +143,19 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
         header_id = list(doc.get('headers', {}).keys())[0]
         footer_id = list(doc.get('footers', {}).keys())[0]
         
-        # FIX: 'segmentId' moved inside 'location'
         reqs_p2 = [
             {'insertTable': {'location': {'segmentId': header_id, 'index': 0}, 'columns': 2, 'rows': 1}},
             {'insertTable': {'location': {'segmentId': footer_id, 'index': 0}, 'columns': 2, 'rows': 1}}
         ]
         execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs_p2}))
 
-        # --- PHASE 3: Text Content ---
+        # --- PHASE 3: Text Content (With Verification) ---
         print("    [3/4] Inserting Corporate Text...")
-        doc = execute_with_retry(docs_service.documents().get(documentId=doc_id))
+        
+        # NEW: Wait until the table actually exists before calculating indices
+        doc = wait_for_table_structure(docs_service, doc_id, header_id)
+        
+        # Now we are guaranteed that ['table'] exists
         h_table = doc['headers'][header_id]['content'][0]['table']
         h_cell_L = h_table['tableRows'][0]['tableCells'][0]['startIndex']
         h_cell_R = h_table['tableRows'][0]['tableCells'][1]['startIndex']
@@ -137,7 +164,6 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
         f_cell_L = f_table['tableRows'][0]['tableCells'][0]['startIndex']
         f_cell_R = f_table['tableRows'][0]['tableCells'][1]['startIndex']
 
-        # FIX: 'segmentId' moved inside 'location' / 'range'
         reqs_p3 = [
             {'insertText': {'location': {'segmentId': header_id, 'index': h_cell_R}, 'text': f"Ref: {doc_title}"}},
             {'insertText': {'location': {'segmentId': footer_id, 'index': f_cell_L}, 'text': f"Version: 1.0 | {today_str}"}},
@@ -156,7 +182,6 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
         print("    [4/4] Inserting Logo...")
         logo_inserted = False
         if ENABLE_IMAGE_LOGO:
-            # FIX: 'segmentId' moved inside 'location'
             logo_req = [{
                 'insertInlineImage': {
                     'location': {'segmentId': header_id, 'index': h_cell_L},
@@ -176,7 +201,6 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
 
     except Exception as e:
         print(f"  [!] CRITICAL FORMATTING FAILURE: {e}")
-        print("      (The document content is safe, but headers/footers may be incomplete.)")
 
 def main():
     creds = authenticate()
@@ -188,7 +212,7 @@ def main():
     ratio = get_png_ratio(final_logo_url)
     logo_width_pt = TARGET_HEIGHT_PT * ratio
     
-    print("--- Starting ISMS Deployment (Syntax Corrected) ---")
+    print("--- Starting ISMS Deployment (Active Verification) ---")
     for filename in os.listdir(LOCAL_DOCS_DIR):
         if filename.endswith(".md"):
             print(f"\nProcessing: {filename}")
