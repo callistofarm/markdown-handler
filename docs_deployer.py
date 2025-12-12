@@ -4,9 +4,11 @@ import markdown2
 import io
 import datetime
 import time 
-import random
+import struct
+import re
+from urllib.request import Request, urlopen
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import Request as GoogleRequest
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from googleapiclient.errors import HttpError
@@ -21,13 +23,12 @@ STYLE_FILE = 'corporate_style.css'
 DRIVE_FOLDER_NAME = 'CSCADA/docs_deployer_output'
 
 # --- LOGO CONFIGURATION ---
-# We keep the logo enabled, but the new Retry Logic will handle timeouts.
 ENABLE_IMAGE_LOGO = True
-LOGO_URL = 'https://www.ppa.org.fj/wp-content/uploads/2017/04/ComAp-master-logo-with-R-300x73.png'
+# Your GitHub Link (Script will auto-convert to Raw)
+LOGO_URL = 'https://github.com/callistofarm/markdown-handler/blob/main/logo.png'
 
-# Safe Dimensions (50px Height) to prevent layout crashes
-LOGO_HEIGHT_PT = 37.5
-LOGO_WIDTH_PT = 154.1
+# Fixed Height for Header (50px converted to points)
+TARGET_HEIGHT_PT = 37.5 
 
 def authenticate():
     creds = None
@@ -36,7 +37,7 @@ def authenticate():
             creds = pickle.load(token)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            creds.refresh(GoogleRequest())
         else:
             flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
             print("\n--- GOOGLE AUTHENTICATION REQUIRED ---")
@@ -52,10 +53,37 @@ def get_drive_service(creds):
 def get_docs_service(creds):
     return build('docs', 'v1', credentials=creds)
 
+def sanitize_logo_url(url):
+    """Converts GitHub Blob URLs to Raw content URLs."""
+    if 'github.com' in url and '/blob/' in url:
+        return url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+    return url
+
+def get_png_ratio(url):
+    """
+    Downloads the first 24 bytes of a PNG to calculate aspect ratio.
+    Returns: float (width / height) or Default 2.0
+    """
+    try:
+        print(f"    [i] Analysing logo dimensions: {url}")
+        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        data = urlopen(req, timeout=5).read(24)
+        
+        # PNG Signature check
+        if data[:8] != b'\x89PNG\r\n\x1a\n':
+            print("    [!] Logo is not a valid PNG. Using default ratio.")
+            return 2.0
+            
+        # Unpack Width/Height from IHDR chunk (Big Endian Unsigned Long)
+        w, h = struct.unpack('>LL', data[16:24])
+        ratio = w / h
+        print(f"    [i] Detected Dimensions: {w}x{h} (Ratio: {ratio:.2f})")
+        return ratio
+    except Exception as e:
+        print(f"    [!] Could not detect logo size: {e}. Using default.")
+        return 2.0 # Default fallback
+
 def execute_with_retry(request_object, retries=3, delay=2):
-    """
-    Executes a Google API request with exponential backoff for 500 errors.
-    """
     for n in range(retries):
         try:
             return request_object.execute()
@@ -63,9 +91,9 @@ def execute_with_retry(request_object, retries=3, delay=2):
             if e.resp.status in [500, 502, 503, 504]:
                 print(f"    [~] API {e.resp.status} Error. Retrying in {delay}s... ({n+1}/{retries})")
                 time.sleep(delay)
-                delay *= 2 # Exponential backoff
+                delay *= 2 
             else:
-                raise e # Re-raise 4xx errors immediately
+                raise e 
     print("    [!] All retries failed.")
     raise Exception("API Retry Limit Exceeded")
 
@@ -125,7 +153,7 @@ def enable_table_header_repeat(docs_service, doc_id):
     except Exception as e:
         print(f"  [!] Table Header Warning: {str(e)}")
 
-def add_corporate_header_footer(docs_service, doc_id, doc_title):
+def add_corporate_header_footer(docs_service, doc_id, doc_title, logo_width_pt, logo_url):
     try:
         # STEP 1: Init Containers
         init_reqs = [
@@ -133,7 +161,7 @@ def add_corporate_header_footer(docs_service, doc_id, doc_title):
             {'createFooter': {'type': 'DEFAULT', 'sectionBreakLocation': {'index': 1}}}
         ]
         execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': init_reqs}))
-        time.sleep(1) # Sync Wait
+        time.sleep(1) 
 
         # STEP 2: Fetch IDs
         doc = execute_with_retry(docs_service.documents().get(documentId=doc_id))
@@ -146,9 +174,9 @@ def add_corporate_header_footer(docs_service, doc_id, doc_title):
             {'insertTable': {'segmentId': footer_id, 'location': {'index': 0}, 'columns': 2, 'rows': 1}}
         ]
         execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': table_reqs}))
-        time.sleep(1) # Sync Wait
+        time.sleep(1) 
 
-        # STEP 4: Calculate Indices (Fresh Fetch)
+        # STEP 4: Calculate Indices
         doc = execute_with_retry(docs_service.documents().get(documentId=doc_id))
         h_table = doc['headers'][header_id]['content'][0]['table']
         h_cell_L = h_table['tableRows'][0]['tableCells'][0]['startIndex']
@@ -177,31 +205,30 @@ def add_corporate_header_footer(docs_service, doc_id, doc_title):
         ]
         execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': align_reqs}))
 
-        # STEP 7: Branding (With Fallback)
+        # STEP 7: Branding
         if ENABLE_IMAGE_LOGO:
             try:
                 logo_req = [{
                     'insertInlineImage': {
                         'segmentId': header_id, 
                         'location': {'index': h_cell_L},
-                        'uri': LOGO_URL,
+                        'uri': logo_url,
                         'objectSize': {
-                            'height': {'magnitude': LOGO_HEIGHT_PT, 'unit': 'PT'}, 
-                            'width': {'magnitude': LOGO_WIDTH_PT, 'unit': 'PT'}
+                            'height': {'magnitude': TARGET_HEIGHT_PT, 'unit': 'PT'}, 
+                            'width': {'magnitude': logo_width_pt, 'unit': 'PT'}
                         }
                     }
                 }]
-                # We use the retry wrapper here too, because 500s are common with images
                 execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': logo_req}), retries=2, delay=3)
             except Exception as e:
                 print(f"  [!] Logo Timed Out. Applying Fallback Text.")
-                fallback = [{'insertText': {'segmentId': header_id, 'location': {'index': h_cell_L}, 'text': "[ComAp LOGO]"}}]
+                fallback = [{'insertText': {'segmentId': header_id, 'location': {'index': h_cell_L}, 'text': "[LOGO]"}}]
                 execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': fallback}))
         else:
-            fallback = [{'insertText': {'segmentId': header_id, 'location': {'index': h_cell_L}, 'text': "[ComAp LOGO]"}}]
+            fallback = [{'insertText': {'segmentId': header_id, 'location': {'index': h_cell_L}, 'text': "[LOGO]"}}]
             execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': fallback}))
 
-        # STEP 8: Styling/Borders
+        # STEP 8: Styling
         style_reqs = [
             {'updateTableCellStyle': {'tableStartLocation': {'segmentId': header_id, 'index': 0}, 'fields': 'borderTop,borderBottom,borderLeft,borderRight', 'tableCellStyle': {'borderTop': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderBottom': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderLeft': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderRight': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}}}},
             {'updateTableCellStyle': {'tableStartLocation': {'segmentId': footer_id, 'index': 0}, 'fields': 'borderTop,borderBottom,borderLeft,borderRight', 'tableCellStyle': {'borderTop': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderBottom': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderLeft': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderRight': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}}}}
@@ -213,7 +240,7 @@ def add_corporate_header_footer(docs_service, doc_id, doc_title):
     except Exception as e:
         print(f"  [!] Formatting Critical Error: {str(e)}")
 
-def process_file(drive_service, docs_service, filename, local_path, folder_id, css_style):
+def process_file(drive_service, docs_service, filename, local_path, folder_id, css_style, logo_width_pt, logo_url):
     with open(local_path, 'r', encoding='utf-8') as f:
         md_content = f.read()
     
@@ -223,16 +250,15 @@ def process_file(drive_service, docs_service, filename, local_path, folder_id, c
     file_metadata = {'name': filename.replace('.md', ''), 'parents': [folder_id], 'mimeType': 'application/vnd.google-apps.document'}
     media = MediaIoBaseUpload(io.BytesIO(full_html.encode('utf-8')), mimetype='text/html', resumable=True)
     
-    # Retry the file upload/creation itself
     file = execute_with_retry(drive_service.files().create(body=file_metadata, media_body=media, fields='id'))
     doc_id = file.get('id')
     print(f"Deployed: {file_metadata['name']} (ID: {doc_id})")
     
-    time.sleep(2) # Initial propagation wait
+    time.sleep(2) 
     
     insert_toc_placeholder(docs_service, doc_id)
     enable_table_header_repeat(docs_service, doc_id)
-    add_corporate_header_footer(docs_service, doc_id, file_metadata['name'])
+    add_corporate_header_footer(docs_service, doc_id, file_metadata['name'], logo_width_pt, logo_url)
 
 def main():
     creds = authenticate()
@@ -241,12 +267,19 @@ def main():
     folder_id = get_or_create_drive_path(drive_service, DRIVE_FOLDER_NAME)
     css_style = load_style()
     
-    print("--- Starting ISMS Deployment (Resilience Mode) ---")
+    # Pre-calculate Logo Geometry
+    final_logo_url = sanitize_logo_url(LOGO_URL)
+    ratio = get_png_ratio(final_logo_url)
+    logo_width_pt = TARGET_HEIGHT_PT * ratio
+    
+    print("--- Starting ISMS Deployment (Auto-Scale Mode) ---")
     for filename in os.listdir(LOCAL_DOCS_DIR):
         if filename.endswith(".md"):
             try:
-                process_file(drive_service, docs_service, filename, os.path.join(LOCAL_DOCS_DIR, filename), folder_id, css_style)
-                time.sleep(2) # Inter-file delay
+                process_file(drive_service, docs_service, filename, 
+                           os.path.join(LOCAL_DOCS_DIR, filename), 
+                           folder_id, css_style, logo_width_pt, final_logo_url)
+                time.sleep(2) 
             except Exception as e:
                 print(f"Failed to process {filename}: {e}")
     print("--- Deployment Complete ---")
