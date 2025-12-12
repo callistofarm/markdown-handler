@@ -62,12 +62,6 @@ def get_png_ratio(url):
         return 2.0
 
 def execute_with_retry(request_object, retries=8, delay=5, strict=True):
-    """
-    High-Latency Retry Wrapper:
-    Retries: 8
-    Base Delay: 5s
-    Max Wait: ~5-6 minutes total coverage for heavy propagation lag.
-    """
     for n in range(retries):
         try:
             return request_object.execute()
@@ -75,7 +69,7 @@ def execute_with_retry(request_object, retries=8, delay=5, strict=True):
             if e.resp.status >= 500:
                 print(f"    [~] API {e.resp.status}. Retrying in {delay}s... ({n+1}/{retries})")
                 time.sleep(delay)
-                delay = min(delay * 1.5, 60) # Cap delay at 60s
+                delay = min(delay * 1.5, 60)
             else:
                 if strict: raise e
                 else: 
@@ -111,9 +105,7 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
     today_str = datetime.date.today().strftime("%d-%b-%Y")
 
     try:
-        # --- PHASE 1: Structure (Headers/Footers) ---
-        # FIX: Removed explicit 'sectionBreakLocation' to allow API to default to the Body Section.
-        # This prevents "Index Out of Bounds" race conditions.
+        # --- PHASE 1: Structure ---
         print("    [1/4] Creating Headers & Footers...")
         reqs_p1 = [
             {'createHeader': {'type': 'DEFAULT'}}, 
@@ -121,15 +113,16 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
         ]
         execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs_p1}))
         
-        # --- PHASE 2: Tables & Layout ---
+        # --- PHASE 2: Tables ---
         print("    [2/4] Inserting Layout Tables...")
         doc = execute_with_retry(docs_service.documents().get(documentId=doc_id))
         header_id = list(doc.get('headers', {}).keys())[0]
         footer_id = list(doc.get('footers', {}).keys())[0]
         
+        # FIX: 'segmentId' moved inside 'location'
         reqs_p2 = [
-            {'insertTable': {'segmentId': header_id, 'location': {'index': 0}, 'columns': 2, 'rows': 1}},
-            {'insertTable': {'segmentId': footer_id, 'location': {'index': 0}, 'columns': 2, 'rows': 1}}
+            {'insertTable': {'location': {'segmentId': header_id, 'index': 0}, 'columns': 2, 'rows': 1}},
+            {'insertTable': {'location': {'segmentId': footer_id, 'index': 0}, 'columns': 2, 'rows': 1}}
         ]
         execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs_p2}))
 
@@ -144,27 +137,29 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
         f_cell_L = f_table['tableRows'][0]['tableCells'][0]['startIndex']
         f_cell_R = f_table['tableRows'][0]['tableCells'][1]['startIndex']
 
+        # FIX: 'segmentId' moved inside 'location' / 'range'
         reqs_p3 = [
-            {'insertText': {'segmentId': header_id, 'location': {'index': h_cell_R}, 'text': f"Ref: {doc_title}"}},
-            {'insertText': {'segmentId': footer_id, 'location': {'index': f_cell_L}, 'text': f"Version: 1.0 | {today_str}"}},
-            {'insertText': {'segmentId': footer_id, 'location': {'index': f_cell_R}, 'text': "Page "}},
-            {'insertPageNumber': {'segmentId': footer_id, 'location': {'index': f_cell_R + 5}}},
-            # Alignment & Borders
-            {'updateParagraphStyle': {'segmentId': header_id, 'range': {'startIndex': h_cell_R, 'endIndex': h_cell_R + 1}, 'paragraphStyle': {'alignment': 'END'}, 'fields': 'alignment'}},
-            {'updateParagraphStyle': {'segmentId': footer_id, 'range': {'startIndex': f_cell_R, 'endIndex': f_cell_R + 1}, 'paragraphStyle': {'alignment': 'END'}, 'fields': 'alignment'}},
+            {'insertText': {'location': {'segmentId': header_id, 'index': h_cell_R}, 'text': f"Ref: {doc_title}"}},
+            {'insertText': {'location': {'segmentId': footer_id, 'index': f_cell_L}, 'text': f"Version: 1.0 | {today_str}"}},
+            {'insertText': {'location': {'segmentId': footer_id, 'index': f_cell_R}, 'text': "Page "}},
+            {'insertPageNumber': {'location': {'segmentId': footer_id, 'index': f_cell_R + 5}}},
+            # Alignment
+            {'updateParagraphStyle': {'range': {'segmentId': header_id, 'startIndex': h_cell_R, 'endIndex': h_cell_R + 1}, 'paragraphStyle': {'alignment': 'END'}, 'fields': 'alignment'}},
+            {'updateParagraphStyle': {'range': {'segmentId': footer_id, 'startIndex': f_cell_R, 'endIndex': f_cell_R + 1}, 'paragraphStyle': {'alignment': 'END'}, 'fields': 'alignment'}},
+            # Borders
             {'updateTableCellStyle': {'tableStartLocation': {'segmentId': header_id, 'index': 0}, 'fields': 'borderTop,borderBottom,borderLeft,borderRight', 'tableCellStyle': {'borderTop': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderBottom': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderLeft': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderRight': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}}}},
             {'updateTableCellStyle': {'tableStartLocation': {'segmentId': footer_id, 'index': 0}, 'fields': 'borderTop,borderBottom,borderLeft,borderRight', 'tableCellStyle': {'borderTop': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderBottom': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderLeft': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}, 'borderRight': {'style': 'NONE', 'width': {'magnitude': 0, 'unit': 'PT'}}}}}
         ]
         execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs_p3}))
 
-        # --- PHASE 4: Logo (FAULT TOLERANT) ---
+        # --- PHASE 4: Logo ---
         print("    [4/4] Inserting Logo...")
         logo_inserted = False
         if ENABLE_IMAGE_LOGO:
+            # FIX: 'segmentId' moved inside 'location'
             logo_req = [{
                 'insertInlineImage': {
-                    'segmentId': header_id, 
-                    'location': {'index': h_cell_L},
+                    'location': {'segmentId': header_id, 'index': h_cell_L},
                     'uri': logo_url,
                     'objectSize': {'height': {'magnitude': TARGET_HEIGHT_PT, 'unit': 'PT'}, 'width': {'magnitude': logo_width_pt, 'unit': 'PT'}}
                 }
@@ -174,7 +169,7 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
 
         if not logo_inserted:
             print("    [!] Logo failed or disabled. Inserting Fallback Text.")
-            fallback = [{'insertText': {'segmentId': header_id, 'location': {'index': h_cell_L}, 'text': "[LOGO]"}}]
+            fallback = [{'insertText': {'location': {'segmentId': header_id, 'index': h_cell_L}, 'text': "[LOGO]"}}]
             execute_with_retry(docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': fallback}))
 
         print("  [+] Branding Complete.")
@@ -193,7 +188,7 @@ def main():
     ratio = get_png_ratio(final_logo_url)
     logo_width_pt = TARGET_HEIGHT_PT * ratio
     
-    print("--- Starting ISMS Deployment (High Stability Mode) ---")
+    print("--- Starting ISMS Deployment (Syntax Corrected) ---")
     for filename in os.listdir(LOCAL_DOCS_DIR):
         if filename.endswith(".md"):
             print(f"\nProcessing: {filename}")
@@ -216,7 +211,6 @@ def main():
                     {'insertText': {'location': {'index': 1}, 'text': "Table of Contents\n"}},
                     {'updateParagraphStyle': {'range': {'startIndex': 1, 'endIndex': 15}, 'paragraphStyle': {'namedStyleType': 'HEADING_1'}, 'fields': 'namedStyleType'}}
                 ]
-                # High Latency Wait: Give the doc 10 full seconds to settle before first edit.
                 print("  [.] Waiting 10s for propagation...")
                 time.sleep(10)
                 execute_with_retry(docs.documents().batchUpdate(documentId=doc_id, body={'requests': toc_req}))
