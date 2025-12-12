@@ -66,7 +66,7 @@ LOCAL_DOCS_DIR = './artifacts'
 STYLE_FILE = 'corporate_style.css'
 
 # PASTE YOUR EXISTING CSCADA FOLDER ID HERE
-ROOT_FOLDER_ID = 1pn4twkjjG_VlJOpAvrcdvE4C2PISyR3e  # e.g., '1x2y3z...'
+ROOT_FOLDER_ID = '1pn4twkjjG_VlJOpAvrcdvE4C2PISyR3e'  # e.g., '1x2y3z...'
 
 OUTPUT_FOLDER_NAME = 'docs_deployer_output'
 
