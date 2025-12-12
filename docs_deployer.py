@@ -35,9 +35,6 @@ TARGET_HEIGHT_PT = 37.5
 
 def authenticate():
     creds = None
-    
-    # STRATEGY 1: Service Account (CI/CD)
-    # Check Env Var first
     env_sa = os.environ.get('GOOGLE_CREDENTIALS_B64')
     if env_sa:
         print("  [i] Auth: Found Service Account in Env Var...")
@@ -47,14 +44,11 @@ def authenticate():
         except Exception as e:
             print(f"  [!] Env Var Auth Failed: {e}")
 
-    # Check Local File
     if os.path.exists('service_account.json'):
         print("  [i] Auth: Found 'service_account.json'. Using Service Account...")
         return service_account.Credentials.from_service_account_file('service_account.json', scopes=SCOPES)
 
-    # STRATEGY 2: User Credentials (Local Dev / Fallback)
     print("  [i] Auth: Defaulting to User Credentials (credentials.json)...")
-    
     if os.path.exists('token.pickle'):
         with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
@@ -65,7 +59,6 @@ def authenticate():
         else:
             if not os.path.exists('credentials.json'):
                 raise FileNotFoundError("CRITICAL: No 'service_account.json' OR 'credentials.json' found.")
-                
             flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
             print("\n--- GOOGLE USER AUTHENTICATION REQUIRED ---")
             print("1. Copy the URL below.")
@@ -74,12 +67,9 @@ def authenticate():
             print("4. IMPORTANT: If the browser site fails to load (localhost refused):")
             print("   Copy the URL from the browser address bar (http://localhost:8080/?code=...)")
             print("   Open a new WSL terminal tab and run: curl \"<PASTED_URL>\"")
-            
             creds = flow.run_local_server(host='localhost', port=8080, open_browser=False)
-            
         with open('token.pickle', 'wb') as token:
             pickle.dump(creds, token)
-            
     return creds
 
 def get_services(creds):
@@ -132,10 +122,8 @@ def get_or_create_output_folder(service, root_id, folder_name):
             folder = service.files().create(body=metadata, fields='id').execute()
             return folder.get('id')
         except HttpError as e:
-             # Handle the case where Service Account tries to create a folder inside a user folder it can't verify
              if e.resp.status == 404:
                  print("  [!] Error 404: The script cannot find the Parent Folder.")
-                 print("      Ensure you have SHARED the 'CSCADA' folder with the Service Account email address.")
              raise e
     else:
         print(f"  [.] Found Existing Output Folder: {folder_name}")
@@ -152,7 +140,8 @@ def find_table_cells(content_list):
             row = element['table']['tableRows'][0]
             idx_l = row['tableCells'][0]['startIndex']
             idx_r = row['tableCells'][1]['startIndex']
-            return idx_l, idx_r
+            # CRITICAL FIX: Return Index + 1 (Start of Content, not Start of Cell)
+            return idx_l + 1, idx_r + 1
     return None, None
 
 def wait_and_get_indices(docs_service, doc_id, header_id, footer_id):
@@ -197,11 +186,11 @@ def apply_structure_and_branding(docs_service, doc_id, doc_title, logo_width_pt,
             {'insertText': {'location': {'segmentId': footer_id, 'index': f_L}, 'text': f"Version: 1.0 | {today_str}"}},
             {'insertText': {'location': {'segmentId': footer_id, 'index': f_R}, 'text': "Page "}},
             
-            # Alignment
+            # Alignment (Index is now correct)
             {'updateParagraphStyle': {'range': {'segmentId': header_id, 'startIndex': h_R, 'endIndex': h_R + 1}, 'paragraphStyle': {'alignment': 'END'}, 'fields': 'alignment'}},
             {'updateParagraphStyle': {'range': {'segmentId': footer_id, 'startIndex': f_R, 'endIndex': f_R + 1}, 'paragraphStyle': {'alignment': 'END'}, 'fields': 'alignment'}},
             
-            # Borders
+            # Borders (Back to Index - 1 because styling applies to the Cell Wall, not the Content)
             {'updateTableCellStyle': {
                 'tableStartLocation': {'segmentId': header_id, 'index': 0}, 
                 'fields': 'borderTop,borderBottom,borderLeft,borderRight', 
@@ -258,7 +247,7 @@ def main():
     ratio = get_png_ratio(final_logo_url)
     logo_width_pt = TARGET_HEIGHT_PT * ratio
     
-    print("--- Starting ISMS Deployment (Hybrid Auth) ---")
+    print("--- Starting ISMS Deployment (Index Corrected) ---")
     for filename in os.listdir(LOCAL_DOCS_DIR):
         if filename.endswith(".md"):
             print(f"\nProcessing: {filename}")
